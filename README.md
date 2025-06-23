@@ -5,9 +5,8 @@
 ## 開発環境の構築方法
 
 ### 前提条件
-- Node.js (v16以上推奨)
-- npm または yarn
-- Git
+- Docker
+- Docker Compose
 
 ### セットアップ手順
 
@@ -17,11 +16,10 @@ git clone [リポジトリURL]
 cd project
 ```
 
-2. 依存関係をインストール
+2. Dockerコンテナのビルドと依存関係のインストール
 ```bash
-npm install
-# または
-yarn install
+docker compose build   
+docker compose --rm app npm install
 ```
 
 3. 環境変数の設定
@@ -33,9 +31,7 @@ VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 4. 開発サーバーを起動
 ```bash
-npm run dev
-# または
-yarn dev
+docker compose --rm app npm run dev
 ```
 
 5. ブラウザで以下にアクセス
