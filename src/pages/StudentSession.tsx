@@ -167,8 +167,20 @@ export function StudentSession() {
       // Update last seen periodically
       const interval = setInterval(updateLastSeen, 30000)
       
+      // Add periodic refresh for tasks and progress regardless of WebSocket status
+      // This ensures the student screen is updated even if WebSocket events are missed
+      const tasksRefreshInterval = setInterval(() => {
+        console.log('Periodic refresh: Loading tasks')
+        loadTasks()
+      }, 15000) // Every 15 seconds
+      
+      const progressRefreshInterval = setInterval(() => {
+        console.log('Periodic refresh: Loading progress')
+        loadProgress()
+      }, 15000) // Every 15 seconds
+      
       // State to track if WebSockets are working and polling fallback
-      let pollingIntervals: NodeJS.Timeout[] = []
+      let pollingIntervals: NodeJS.Timeout[] = [tasksRefreshInterval, progressRefreshInterval]
       
       // Track reconnection attempts and active subscriptions
       let reconnectAttempts = 0
@@ -552,13 +564,12 @@ export function StudentSession() {
     if (!participant) return
 
     try {
-      // Set viewing_student_screen to true since the student is currently viewing the page
+      // Update the last_seen timestamp and online status
       const { error, count } = await supabase
         .from('participants')
         .update({ 
           last_seen: new Date().toISOString(), 
-          is_online: true,
-          viewing_student_screen: true 
+          is_online: true
         })
         .eq('id', participant.id)
       

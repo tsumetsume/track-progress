@@ -35,7 +35,6 @@ interface Participant {
   last_seen: string
   created_at: string
   is_online: boolean
-  viewing_student_screen: boolean
 }
 
 interface Progress {
@@ -362,14 +361,25 @@ export function InstructorDashboard() {
     if (!selectedSession) return
 
     try {
-      const participantIds = participants.map(p => p.id)
-      const { error } = await supabase
+      // First, get all existing progress records to ensure we can notify about each deletion
+      const { data: existingProgress } = await supabase
         .from('progress')
-        .delete()
-        .in('participant_id', participantIds)
-
-      if (error) throw error
+        .select('*')
+        .in('participant_id', participants.map(p => p.id))
+      
+      // Delete all progress records one by one to ensure proper WebSocket notifications
+      // This is less efficient but ensures each client gets proper delete notifications
+      for (const progressItem of (existingProgress || [])) {
+        await supabase
+          .from('progress')
+          .delete()
+          .eq('id', progressItem.id)
+      }
+      
+      // Update local state
       setProgress([])
+      
+      console.log('All progress reset successfully')
     } catch (error) {
       console.error('Error resetting progress:', error)
     }
@@ -695,9 +705,6 @@ export function InstructorDashboard() {
                           <div className="flex items-center space-x-2">
                             <div className={`w-3 h-3 rounded-full ${isParticipantActive(participant) ? 'bg-green-500' : 'bg-gray-400'}`} />
                             <span className="font-medium">{participant.name}</span>
-                            {participant.viewing_student_screen && (
-                              <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">生徒画面閲覧中</span>
-                            )}
                           </div>
                           <div className="flex items-center space-x-3">
                             <span className="text-sm text-gray-600">
