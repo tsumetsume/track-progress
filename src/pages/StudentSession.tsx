@@ -29,6 +29,7 @@ interface Participant {
   last_seen: string
   created_at: string
   is_online: boolean
+  viewing_student_screen: boolean
 }
 
 interface Progress {
@@ -67,6 +68,96 @@ export function StudentSession() {
       navigate('/join')
     }
   }, [sessionCode, navigate])
+
+  // Set viewing_student_screen and is_online to false when user leaves the page
+  useEffect(() => {
+    if (!participant) return;
+    
+    // Function to update participant status when leaving
+    const updateOfflineStatus = () => {
+      try {
+        // Use navigator.sendBeacon for more reliable delivery during page unload
+        if (navigator.sendBeacon) {
+          const url = `${window.location.origin}/api/update-status`;
+          const data = new Blob([
+            JSON.stringify({
+              id: participant.id,
+              viewing_student_screen: false,
+              is_online: false,
+              last_seen: new Date().toISOString()
+            })
+          ], { type: 'application/json' });
+          
+          navigator.sendBeacon(url, data);
+        }
+        
+        // Direct Supabase update as fallback
+        supabase
+          .from('participants')
+          .update({ 
+            viewing_student_screen: false,
+            is_online: false,
+            last_seen: new Date().toISOString()
+          })
+          .eq('id', participant.id);
+      } catch (error) {
+        console.error('Error updating offline status:', error);
+      }
+    };
+    
+    // Handle page visibility change (tab switching, minimizing)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        // When tab is hidden, mark as not viewing student screen but still online
+        supabase
+          .from('participants')
+          .update({ viewing_student_screen: false })
+          .eq('id', participant.id);
+      } else if (document.visibilityState === 'visible') {
+        // When tab becomes visible again, mark as viewing and online
+        supabase
+          .from('participants')
+          .update({ 
+            viewing_student_screen: true,
+            is_online: true,
+            last_seen: new Date().toISOString() 
+          })
+          .eq('id', participant.id);
+      }
+    };
+    
+    // Setup ping interval to detect browser close
+    // If pings stop, backend can mark user as offline after timeout
+    const pingInterval = setInterval(() => {
+      supabase
+        .from('participants')
+        .update({ 
+          last_seen: new Date().toISOString(),
+          is_online: true 
+        })
+        .eq('id', participant.id);
+    }, 30000); // Every 30 seconds
+    
+    // Handle page unload events
+    const handleBeforeUnload = () => {
+      clearInterval(pingInterval);
+      updateOfflineStatus();
+    };
+
+    // Add event listeners
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload); // For iOS Safari
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Cleanup on component unmount
+    return () => {
+      clearInterval(pingInterval);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      updateOfflineStatus();
+    };
+  }, [participant])
 
   useEffect(() => {
     if (participant && session) {
@@ -211,12 +302,23 @@ export function StudentSession() {
           () => loadTasks()
         )
 
-        // Subscribe to participants count
+        // Subscribe to participants count and check if current participant still exists
         const participantsSubscription = createSubscription(
           'participants',
           'participants',
           `session_id=eq.${session.id}`,
-          async () => {
+          async (payload) => {
+            // Check if this is a DELETE event for the current participant
+            if (payload.eventType === 'DELETE' && payload.old && payload.old.id === participant.id) {
+              console.log('Current participant was deleted, redirecting to join page')
+              // Clear stored participant data
+              setStoredParticipantId('')
+              // Redirect to join page
+              navigate('/join')
+              return
+            }
+            
+            // Otherwise update participant count as usual
             const { data } = await supabase
               .from('participants')
               .select('id')
@@ -224,6 +326,21 @@ export function StudentSession() {
               .eq('is_online', true)
             
             setParticipantCount(data?.length || 0)
+            
+            // Also check if current participant still exists
+            const { data: currentParticipant } = await supabase
+              .from('participants')
+              .select('id')
+              .eq('id', participant.id)
+              .single()
+              
+            if (!currentParticipant) {
+              console.log('Current participant no longer exists, redirecting to join page')
+              // Clear stored participant data
+              setStoredParticipantId('')
+              // Redirect to join page
+              navigate('/join')
+            }
           }
         )
           
@@ -435,10 +552,24 @@ export function StudentSession() {
     if (!participant) return
 
     try {
-      await supabase
+      // Set viewing_student_screen to true since the student is currently viewing the page
+      const { error, count } = await supabase
         .from('participants')
-        .update({ last_seen: new Date().toISOString() })
+        .update({ 
+          last_seen: new Date().toISOString(), 
+          is_online: true,
+          viewing_student_screen: true 
+        })
         .eq('id', participant.id)
+      
+      // If participant no longer exists (count === 0), redirect to join page
+      if (count === 0) {
+        console.log('Participant no longer exists during last_seen update')
+        // Clear stored participant data
+        setStoredParticipantId('')
+        // Redirect to join page
+        navigate('/join')
+      }
     } catch (error) {
       console.error('Error updating last seen:', error)
     }
@@ -578,7 +709,7 @@ export function StudentSession() {
 
   // Function to handle page reload
   const handleReload = () => {
-    window.location.reload()
+    loadSession()
   }
 
   return (

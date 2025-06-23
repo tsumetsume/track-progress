@@ -35,6 +35,7 @@ interface Participant {
   last_seen: string
   created_at: string
   is_online: boolean
+  viewing_student_screen: boolean
 }
 
 interface Progress {
@@ -388,6 +389,36 @@ export function InstructorDashboard() {
     return { completed, total: participants.length }
   }
 
+  const deleteParticipant = async (participantId: string) => {
+    if (!confirm('この生徒を削除してもよろしいですか？この操作は取り消せません。')) {
+      return
+    }
+
+    try {
+      // Delete participant's progress first
+      const { error: progressError } = await supabase
+        .from('progress')
+        .delete()
+        .eq('participant_id', participantId)
+
+      if (progressError) throw progressError
+
+      // Then delete the participant
+      const { error: participantError } = await supabase
+        .from('participants')
+        .delete()
+        .eq('id', participantId)
+
+      if (participantError) throw participantError
+
+      // Update the UI
+      setParticipants(participants.filter(p => p.id !== participantId))
+      setProgress(progress.filter(p => p.participant_id !== participantId))
+    } catch (error) {
+      console.error('Error deleting participant:', error)
+    }
+  }
+
   const deleteSession = async (sessionId: string) => {
     if (!confirm('このセッションを削除してもよろしいですか？この操作は取り消せません。')) {
       return
@@ -631,7 +662,7 @@ export function InstructorDashboard() {
                 <h3 className="text-xl font-bold text-gray-900">進捗状況</h3>
                 <div className="flex items-center space-x-2 text-green-600">
                   <Users className="w-4 h-4" />
-                  <span className="font-medium">{participants.length}人参加中</span>
+                  <span className="font-medium">{participants.filter(p => p.is_online).length}人参加中</span>
                 </div>
               </div>
 
@@ -649,10 +680,22 @@ export function InstructorDashboard() {
                           <div className="flex items-center space-x-2">
                             <div className={`w-3 h-3 rounded-full ${participant.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
                             <span className="font-medium">{participant.name}</span>
+                            {participant.viewing_student_screen && (
+                              <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">生徒画面閲覧中</span>
+                            )}
                           </div>
-                          <span className="text-sm text-gray-600">
-                            {completedTasks}/{tasks.length} 完了
-                          </span>
+                          <div className="flex items-center space-x-3">
+                            <span className="text-sm text-gray-600">
+                              {completedTasks}/{tasks.length} 完了
+                            </span>
+                            <button
+                              onClick={() => deleteParticipant(participant.id)}
+                              className="p-1 hover:bg-red-100 rounded"
+                              title="生徒を削除"
+                            >
+                              <Trash2 className="w-3 h-3 text-red-600" />
+                            </button>
+                          </div>
                         </div>
                         <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
                           {tasks.map((task) => {
