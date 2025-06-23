@@ -73,31 +73,74 @@ export function StudentSession() {
       loadProgress()
       
       // Update last seen periodically
-      const interval = setInterval(updateLastSeen, 30000)
+      const interval = setInterval(updateLastSeen, 3000)
       
-      // Setup subscriptions
-      const tasksSubscription = supabase
-        .channel(`tasks_${session.id}`)
-        .on('postgres_changes', {
-          event: '*',
-          schema: 'public',
-          table: 'tasks',
-          filter: `session_id=eq.${session.id}`
-        }, () => {
+      // State to track if WebSockets are working and polling fallback
+      let pollingIntervals: NodeJS.Timeout[] = []
+      
+      // Helper function to handle subscription creation and error handling
+      const createSubscription = (channelName: string, table: string, filter: string, callback: (payload: any) => void) => {
+        console.log(`Creating subscription for ${channelName}`)
+        try {
+          return supabase
+            .channel(channelName, {
+              config: {
+                broadcast: { self: true },
+                presence: { key: '' }
+              }
+            })
+            .on('presence', { event: 'sync' }, () => {
+              console.log(`Presence sync for ${channelName}`)
+            })
+            .on('postgres_changes', {
+              event: '*',
+              schema: 'public',
+              table: table,
+              filter: filter
+            }, (payload) => {
+              console.log(`Received update for ${table}:`, payload)
+              callback(payload)
+            })
+            .subscribe((status) => {
+              console.log(`Subscription status for ${channelName}:`, status)
+              if (status === 'SUBSCRIBED') {
+                console.log(`Successfully subscribed to ${channelName}`)
+                // WebSocket connection successful
+              } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+                console.error(`Error with ${channelName}: ${status}`)
+                // WebSocket connection failed
+                
+                // Start polling as fallback if this is the first error
+                if (pollingIntervals.length === 0) {
+                  console.log('Starting polling fallback mechanism due to error')
+                  setupPollingFallback()
+                }
+              }
+            })
+        } catch (error) {
+          console.error(`Error creating subscription for ${channelName}:`, error)
+          // WebSocket connection failed - start polling if not already started
+          if (pollingIntervals.length === 0) {
+            console.log('Starting polling fallback mechanism due to error')
+            setupPollingFallback()
+          }
+          return null
+        }
+      }
+      
+      // Setup polling fallback when WebSockets fail
+      const setupPollingFallback = () => {
+        console.log('Setting up polling fallback for realtime updates')
+        
+        // Poll for tasks updates
+        const tasksInterval = setInterval(() => {
+          console.log('Polling for tasks updates')
           loadTasks()
-        })
-        .subscribe()
-
-      // Subscribe to participants count
-      const participantsSubscription = supabase
-        .channel(`participants_${session.id}`)
-        .on('postgres_changes', {
-          event: '*',
-          schema: 'public',
-          table: 'participants',
-          filter: `session_id=eq.${session.id}`
-        }, async () => {
-          // Update participant count
+        }, 5000) // Every 5 seconds
+        
+        // Poll for participant count
+        const participantsInterval = setInterval(async () => {
+          console.log('Polling for participants updates')
           const { data } = await supabase
             .from('participants')
             .select('id')
@@ -105,14 +148,97 @@ export function StudentSession() {
             .eq('is_online', true)
           
           setParticipantCount(data?.length || 0)
-        })
-        .subscribe()
+        }, 10000) // Every 10 seconds
+        
+        // Poll for progress updates
+        const progressInterval = setInterval(() => {
+          console.log('Polling for progress updates')
+          loadProgress()
+        }, 5000) // Every 5 seconds
+        
+        pollingIntervals = [tasksInterval, participantsInterval, progressInterval]
+      }
+      
+      // Setup subscriptions with unique identifiers to avoid conflicts
+      
+      const attemptSubscriptions = () => {
+        // Generate a unique timestamp for this subscription attempt
+        const timestamp = Date.now();
+        
+        // Setup subscriptions
+        const tasksSubscription = createSubscription(
+          `tasks_${session.id}_${timestamp}`,
+          'tasks',
+          `session_id=eq.${session.id}`,
+          () => loadTasks()
+        )
+
+        // Subscribe to participants count
+        const participantsSubscription = createSubscription(
+          `participants_${session.id}_${timestamp}`,
+          'participants',
+          `session_id=eq.${session.id}`,
+          async () => {
+            const { data } = await supabase
+              .from('participants')
+              .select('id')
+              .eq('session_id', session.id)
+              .eq('is_online', true)
+            
+            setParticipantCount(data?.length || 0)
+          }
+        )
+          
+        // Subscribe to progress updates
+        const progressSubscription = createSubscription(
+          `progress_${session.id}_${timestamp}`,
+          'progress',
+          `participant_id=eq.${participant.id}`,
+          () => loadProgress()
+        )
+        
+        return { tasksSubscription, participantsSubscription, progressSubscription }
+      }
+      
+      // Initial subscription attempt
+      const { 
+        tasksSubscription, 
+        participantsSubscription, 
+        progressSubscription 
+      } = attemptSubscriptions()
       
       // Cleanup function to remove subscriptions when component unmounts
       return () => {
+        console.log('Cleaning up subscriptions and polling intervals')
         clearInterval(interval)
-        supabase.removeChannel(tasksSubscription)
-        supabase.removeChannel(participantsSubscription)
+        
+        // Clear all polling intervals
+        pollingIntervals.forEach(interval => clearInterval(interval))
+        
+        // Remove WebSocket channels
+        if (tasksSubscription) {
+          try {
+            supabase.removeChannel(tasksSubscription)
+          } catch (e) {
+            console.error('Error removing tasksSubscription:', e)
+          }
+        }
+        
+        if (participantsSubscription) {
+          try {
+            supabase.removeChannel(participantsSubscription)
+          } catch (e) {
+            console.error('Error removing participantsSubscription:', e)
+          }
+        }
+        
+        if (progressSubscription) {
+          try {
+            supabase.removeChannel(progressSubscription)
+          } catch (e) {
+            console.error('Error removing progressSubscription:', e)
+          }
+        }
       }
     }
   }, [participant, session])

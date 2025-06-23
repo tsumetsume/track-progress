@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Layout } from '../components/Layout'
 import { LoadingSpinner } from '../components/LoadingSpinner'
 import { supabase } from '../lib/supabase'
@@ -7,13 +7,9 @@ import {
   Copy, 
   Check, 
   Users, 
-  Play, 
-  Square, 
   RotateCcw, 
   Trash2,
-  Edit3,
-  X,
-  AlertCircle
+  Edit3
 } from 'lucide-react'
 
 interface Session {
@@ -136,34 +132,116 @@ export function InstructorDashboard() {
   }
 
   const subscribeToUpdates = (sessionId: string) => {
-    // Subscribe to participants changes
-    const participantsSubscription = supabase
-      .channel(`participants_${sessionId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'participants',
-        filter: `session_id=eq.${sessionId}`
-      }, () => {
+    // State to track if WebSockets are working
+    let pollingIntervals: NodeJS.Timeout[] = []
+    
+    // Helper function to handle subscription errors and reconnection
+    const createSubscription = (channelName: string, table: string, filter: string) => {
+      console.log(`Creating subscription for ${channelName}`)
+      try {
+        return supabase
+          .channel(channelName, {
+            config: {
+              broadcast: { self: true },
+              presence: { key: '' }
+            }
+          })
+          .on('presence', { event: 'sync' }, () => {
+            console.log(`Presence sync for ${channelName}`)
+          })
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: table,
+            filter: filter
+          }, (payload) => {
+            console.log(`Received update for ${table}:`, payload)
+            loadSessionData(sessionId)
+          })
+          .subscribe((status) => {
+            console.log(`Subscription status for ${channelName}:`, status)
+            if (status === 'SUBSCRIBED') {
+              console.log(`Successfully subscribed to ${channelName}`)
+            } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+              console.error(`Error with ${channelName}: ${status}`)
+              
+              // Start polling as fallback if this is the first error
+              if (pollingIntervals.length === 0) {
+                console.log('Starting polling fallback mechanism')
+                setupPollingFallback()
+              }
+            }
+          })
+      } catch (error) {
+        console.error(`Error creating subscription for ${channelName}:`, error)
+        return null
+      }
+    }
+    
+    // Setup polling fallback when WebSockets fail
+    const setupPollingFallback = () => {
+      console.log('Setting up polling fallback for realtime updates')
+      
+      // Poll for session data updates
+      const dataInterval = setInterval(() => {
+        console.log('Polling for session data updates')
         loadSessionData(sessionId)
-      })
-      .subscribe()
+      }, 5000) // Every 5 seconds
+      
+      pollingIntervals.push(dataInterval)
+    }
+
+    // Subscribe to participants changes with unique channel name to avoid conflicts
+    const participantsSubscription = createSubscription(
+      `participants_${sessionId}_${Date.now()}`,
+      'participants',
+      `session_id=eq.${sessionId}`
+    )
 
     // Subscribe to progress changes
-    const progressSubscription = supabase
-      .channel(`progress_${sessionId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'progress'
-      }, () => {
-        loadSessionData(sessionId)
-      })
-      .subscribe()
+    const progressSubscription = createSubscription(
+      `progress_${sessionId}_${Date.now()}`,
+      'progress',
+      `participant_id=in.(${participants.map(p => p.id).join(',')})`
+    )
+
+    // Subscribe to tasks changes
+    const tasksSubscription = createSubscription(
+      `tasks_${sessionId}_${Date.now()}`,
+      'tasks',
+      `session_id=eq.${sessionId}`
+    )
 
     return () => {
-      supabase.removeChannel(participantsSubscription)
-      supabase.removeChannel(progressSubscription)
+      console.log('Cleaning up subscriptions and polling intervals')
+      
+      // Clear all polling intervals
+      pollingIntervals.forEach(interval => clearInterval(interval))
+      
+      // Remove WebSocket channels with error handling
+      if (participantsSubscription) {
+        try {
+          supabase.removeChannel(participantsSubscription)
+        } catch (e) {
+          console.error('Error removing participantsSubscription:', e)
+        }
+      }
+      
+      if (progressSubscription) {
+        try {
+          supabase.removeChannel(progressSubscription)
+        } catch (e) {
+          console.error('Error removing progressSubscription:', e)
+        }
+      }
+      
+      if (tasksSubscription) {
+        try {
+          supabase.removeChannel(tasksSubscription)
+        } catch (e) {
+          console.error('Error removing tasksSubscription:', e)
+        }
+      }
     }
   }
 
