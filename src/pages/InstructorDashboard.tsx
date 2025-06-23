@@ -12,7 +12,8 @@ import {
   RotateCcw, 
   Trash2,
   Edit3,
-  X
+  X,
+  AlertCircle
 } from 'lucide-react'
 
 interface Session {
@@ -298,6 +299,42 @@ export function InstructorDashboard() {
     return { completed, total: participants.length }
   }
 
+  const deleteSession = async (sessionId: string) => {
+    if (!confirm('このセッションを削除してもよろしいですか？この操作は取り消せません。')) {
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      // Delete the session
+      const { error } = await supabase
+        .from('sessions')
+        .delete()
+        .eq('id', sessionId)
+
+      if (error) throw error
+
+      // Update the UI
+      setSessions(sessions.filter(s => s.id !== sessionId))
+      
+      // If the deleted session was selected, clear the selection
+      if (selectedSession?.id === sessionId) {
+        setSelectedSession(null)
+        setTasks([])
+        setParticipants([])
+        setProgress([])
+      }
+      
+    } catch (error) {
+      console.error('Error deleting session:', error)
+      setError('セッションの削除に失敗しました')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <Layout title="講師ダッシュボード">
@@ -399,6 +436,16 @@ export function InstructorDashboard() {
                         ) : (
                           <Copy className="w-4 h-4 text-gray-600" />
                         )}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteSession(session.id)
+                        }}
+                        className="p-2 hover:bg-red-100 rounded-lg transition-colors duration-200"
+                        title="セッションを削除"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
                       </button>
                       <div className={`w-3 h-3 rounded-full ${session.active ? 'bg-green-500' : 'bg-gray-400'}`} />
                     </div>
