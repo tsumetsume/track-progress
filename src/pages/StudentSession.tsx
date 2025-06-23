@@ -52,6 +52,7 @@ export function StudentSession() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [tempName, setTempName] = useState('')
+  const [wsConnectionError, setWsConnectionError] = useState(false)
   
   // Only initialize localStorage hooks when sessionCode is available
   const storageKeyPrefix = sessionCode || ''
@@ -73,17 +74,24 @@ export function StudentSession() {
       loadProgress()
       
       // Update last seen periodically
-      const interval = setInterval(updateLastSeen, 3000)
+      const interval = setInterval(updateLastSeen, 30000)
       
       // State to track if WebSockets are working and polling fallback
       let pollingIntervals: NodeJS.Timeout[] = []
+      
+      // Track reconnection attempts and active subscriptions
+      let reconnectAttempts = 0
+      let reconnectTimer: NodeJS.Timeout | null = null
+      let activeSubscriptions: any[] = []
       
       // Helper function to handle subscription creation and error handling
       const createSubscription = (channelName: string, table: string, filter: string, callback: (payload: any) => void) => {
         console.log(`Creating subscription for ${channelName}`)
         try {
+          // Use a shorter channel name to avoid potential issues
+          const shortChannelName = `${table}_${Math.floor(Math.random() * 10000)}`
           return supabase
-            .channel(channelName, {
+            .channel(shortChannelName, {
               config: {
                 broadcast: { self: true },
                 presence: { key: '' }
@@ -106,20 +114,55 @@ export function StudentSession() {
               if (status === 'SUBSCRIBED') {
                 console.log(`Successfully subscribed to ${channelName}`)
                 // WebSocket connection successful
+                // If this is a retry and was previously in error state, clear the error
+                setWsConnectionError(false)
+                // Reset reconnection attempts on successful connection
+                reconnectAttempts = 0
+                // Clear any pending reconnect timers
+                if (reconnectTimer) {
+                  clearTimeout(reconnectTimer)
+                  reconnectTimer = null
+                }
               } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
                 console.error(`Error with ${channelName}: ${status}`)
                 // WebSocket connection failed
+                
+                // Set WebSocket connection error state
+                setWsConnectionError(true)
                 
                 // Start polling as fallback if this is the first error
                 if (pollingIntervals.length === 0) {
                   console.log('Starting polling fallback mechanism due to error')
                   setupPollingFallback()
                 }
+                
+                // Implement exponential backoff for reconnection
+                const maxReconnectAttempts = 5
+                if (reconnectAttempts < maxReconnectAttempts) {
+                  // Calculate delay with exponential backoff (1s, 2s, 4s, 8s, 16s)
+                  const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000)
+                  console.log(`Scheduling reconnection attempt ${reconnectAttempts + 1} in ${delay}ms`)
+                  
+                  // Clear any existing reconnect timer
+                  if (reconnectTimer) {
+                    clearTimeout(reconnectTimer)
+                  }
+                  
+                  // Schedule reconnection attempt
+                  reconnectTimer = setTimeout(() => {
+                    console.log(`Attempting reconnection #${reconnectAttempts + 1}`)
+                    // Attempt to reconnect by recreating subscriptions
+                    attemptSubscriptions()
+                    reconnectAttempts++
+                  }, delay)
+                }
               }
             })
         } catch (error) {
           console.error(`Error creating subscription for ${channelName}:`, error)
           // WebSocket connection failed - start polling if not already started
+          setWsConnectionError(true)
+          
           if (pollingIntervals.length === 0) {
             console.log('Starting polling fallback mechanism due to error')
             setupPollingFallback()
@@ -159,15 +202,10 @@ export function StudentSession() {
         pollingIntervals = [tasksInterval, participantsInterval, progressInterval]
       }
       
-      // Setup subscriptions with unique identifiers to avoid conflicts
-      
+      // Setup subscriptions with simpler channel names to avoid potential issues
       const attemptSubscriptions = () => {
-        // Generate a unique timestamp for this subscription attempt
-        const timestamp = Date.now();
-        
-        // Setup subscriptions
         const tasksSubscription = createSubscription(
-          `tasks_${session.id}_${timestamp}`,
+          'tasks',
           'tasks',
           `session_id=eq.${session.id}`,
           () => loadTasks()
@@ -175,7 +213,7 @@ export function StudentSession() {
 
         // Subscribe to participants count
         const participantsSubscription = createSubscription(
-          `participants_${session.id}_${timestamp}`,
+          'participants',
           'participants',
           `session_id=eq.${session.id}`,
           async () => {
@@ -191,7 +229,7 @@ export function StudentSession() {
           
         // Subscribe to progress updates
         const progressSubscription = createSubscription(
-          `progress_${session.id}_${timestamp}`,
+          'progress',
           'progress',
           `participant_id=eq.${participant.id}`,
           () => loadProgress()
@@ -200,45 +238,43 @@ export function StudentSession() {
         return { tasksSubscription, participantsSubscription, progressSubscription }
       }
       
-      // Initial subscription attempt
-      const { 
-        tasksSubscription, 
-        participantsSubscription, 
-        progressSubscription 
-      } = attemptSubscriptions()
+      // Setup initial subscriptions
+      activeSubscriptions = Object.values(attemptSubscriptions())
       
-      // Cleanup function to remove subscriptions when component unmounts
+      // Setup a periodic health check for WebSocket connections
+      const healthCheckInterval = setInterval(() => {
+        // If we're in error state, try to reconnect
+        if (wsConnectionError && reconnectAttempts < 5) {
+          console.log('Health check detected connection issues, attempting reconnection')
+          // Clean up existing subscriptions
+          activeSubscriptions.forEach(subscription => {
+            if (subscription && typeof subscription.unsubscribe === 'function') {
+              subscription.unsubscribe()
+            }
+          })
+          
+          // Create new subscriptions
+          activeSubscriptions = Object.values(attemptSubscriptions())
+        }
+      }, 60000) // Check every minute
+      
       return () => {
-        console.log('Cleaning up subscriptions and polling intervals')
+        // Cleanup
         clearInterval(interval)
+        clearInterval(healthCheckInterval)
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        pollingIntervals.forEach(clearInterval)
         
-        // Clear all polling intervals
-        pollingIntervals.forEach(interval => clearInterval(interval))
-        
-        // Remove WebSocket channels
-        if (tasksSubscription) {
-          try {
-            supabase.removeChannel(tasksSubscription)
-          } catch (e) {
-            console.error('Error removing tasksSubscription:', e)
+        // Unsubscribe from all active subscriptions
+        activeSubscriptions.forEach(subscription => {
+          if (subscription && typeof subscription.unsubscribe === 'function') {
+            try {
+              subscription.unsubscribe()
+            } catch (e) {
+              console.error('Error removing subscription:', e)
+            }
           }
-        }
-        
-        if (participantsSubscription) {
-          try {
-            supabase.removeChannel(participantsSubscription)
-          } catch (e) {
-            console.error('Error removing participantsSubscription:', e)
-          }
-        }
-        
-        if (progressSubscription) {
-          try {
-            supabase.removeChannel(progressSubscription)
-          } catch (e) {
-            console.error('Error removing progressSubscription:', e)
-          }
-        }
+        })
       }
     }
   }, [participant, session])
@@ -513,8 +549,30 @@ export function StudentSession() {
     )
   }
 
+  // Function to handle page reload
+  const handleReload = () => {
+    window.location.reload()
+  }
+
   return (
     <Layout title={`${session.title} - ${participant.name}`}>
+      {/* WebSocket Connection Error Alert */}
+      {wsConnectionError && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-red-500 text-white p-4 shadow-lg">
+          <div className="container mx-auto flex items-center justify-between">
+            <div className="flex items-center">
+              <AlertCircle className="w-5 h-5 mr-2" />
+              <span>WebSocketの接続に失敗しました。データが最新ではない可能性があります。</span>
+            </div>
+            <button 
+              onClick={handleReload}
+              className="bg-white text-red-500 px-4 py-1 rounded-md font-medium hover:bg-red-50 transition-colors"
+            >
+              ページを再読み込み
+            </button>
+          </div>
+        </div>
+      )}
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Session Info */}
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl p-6 shadow-lg border border-gray-200">
