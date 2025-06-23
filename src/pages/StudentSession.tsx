@@ -51,10 +51,12 @@ export function StudentSession() {
   const [participantCount, setParticipantCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  
-  const [studentName, setStudentName] = useLocalStorage<string>(`student_name_${sessionCode}`, '')
-  const [storedParticipantId, setStoredParticipantId] = useLocalStorage<string>(`participant_id_${sessionCode}`, '')
   const [tempName, setTempName] = useState('')
+  
+  // Only initialize localStorage hooks when sessionCode is available
+  const storageKeyPrefix = sessionCode || ''
+  const [studentName, setStudentName] = useLocalStorage<string>(`student_name_${storageKeyPrefix}`, '')
+  const [storedParticipantId, setStoredParticipantId] = useLocalStorage<string>(`participant_id_${storageKeyPrefix}`, '')
 
   useEffect(() => {
     if (sessionCode) {
@@ -66,16 +68,54 @@ export function StudentSession() {
   }, [sessionCode, navigate])
 
   useEffect(() => {
-    if (participant) {
+    if (participant && session) {
       loadTasks()
       loadProgress()
-      subscribeToUpdates()
       
       // Update last seen periodically
       const interval = setInterval(updateLastSeen, 30000)
-      return () => clearInterval(interval)
+      
+      // Setup subscriptions
+      const tasksSubscription = supabase
+        .channel(`tasks_${session.id}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'tasks',
+          filter: `session_id=eq.${session.id}`
+        }, () => {
+          loadTasks()
+        })
+        .subscribe()
+
+      // Subscribe to participants count
+      const participantsSubscription = supabase
+        .channel(`participants_${session.id}`)
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'participants',
+          filter: `session_id=eq.${session.id}`
+        }, async () => {
+          // Update participant count
+          const { data } = await supabase
+            .from('participants')
+            .select('id')
+            .eq('session_id', session.id)
+            .eq('is_online', true)
+          
+          setParticipantCount(data?.length || 0)
+        })
+        .subscribe()
+      
+      // Cleanup function to remove subscriptions when component unmounts
+      return () => {
+        clearInterval(interval)
+        supabase.removeChannel(tasksSubscription)
+        supabase.removeChannel(participantsSubscription)
+      }
     }
-  }, [participant])
+  }, [participant, session])
 
   const loadSession = async () => {
     if (!sessionCode) return
@@ -91,7 +131,7 @@ export function StudentSession() {
       setSession(data)
 
       // Try to restore participant if stored
-      if (studentName && storedParticipantId) {
+      if (sessionCode && studentName && storedParticipantId) {
         await restoreOrCreateParticipant(data.id)
       }
     } catch (error) {
@@ -200,47 +240,7 @@ export function StudentSession() {
     }
   }
 
-  const subscribeToUpdates = () => {
-    if (!session) return
-
-    // Subscribe to tasks changes
-    const tasksSubscription = supabase
-      .channel(`tasks_${session.id}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'tasks',
-        filter: `session_id=eq.${session.id}`
-      }, () => {
-        loadTasks()
-      })
-      .subscribe()
-
-    // Subscribe to participants count
-    const participantsSubscription = supabase
-      .channel(`participants_${session.id}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'participants',
-        filter: `session_id=eq.${session.id}`
-      }, async () => {
-        // Update participant count
-        const { data } = await supabase
-          .from('participants')
-          .select('id')
-          .eq('session_id', session.id)
-          .eq('is_online', true)
-        
-        setParticipantCount(data?.length || 0)
-      })
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(tasksSubscription)
-      supabase.removeChannel(participantsSubscription)
-    }
-  }
+  // Removed subscribeToUpdates function as it's now handled directly in the useEffect
 
   const updateLastSeen = async () => {
     if (!participant) return
