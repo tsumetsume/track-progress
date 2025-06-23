@@ -67,7 +67,18 @@ export function InstructorDashboard() {
   useEffect(() => {
     if (selectedSession) {
       loadSessionData(selectedSession.id)
-      subscribeToUpdates(selectedSession.id)
+      const cleanup = subscribeToUpdates(selectedSession.id)
+      
+      // Set up regular polling every 3 seconds regardless of WebSocket status
+      const regularPollingInterval = setInterval(() => {
+        console.log('Regular polling update')
+        loadSessionData(selectedSession.id)
+      }, 3000)
+      
+      return () => {
+        cleanup()
+        clearInterval(regularPollingInterval)
+      }
     }
   }, [selectedSession])
 
@@ -186,7 +197,7 @@ export function InstructorDashboard() {
       const dataInterval = setInterval(() => {
         console.log('Polling for session data updates')
         loadSessionData(sessionId)
-      }, 5000) // Every 5 seconds
+      }, 3000) // Every 3 seconds
       
       pollingIntervals.push(dataInterval)
     }

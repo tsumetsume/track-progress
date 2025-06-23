@@ -400,7 +400,12 @@ export function StudentSession() {
           .single()
 
         if (error) throw error
+        
+        // Update local state
         setProgress(progress.map(p => p.id === existingProgress.id ? data : p))
+        
+        // Log the update to ensure it triggers the realtime subscription
+        console.log('Progress updated:', data)
       } else {
         // Create new progress entry
         const { data, error } = await supabase
@@ -408,13 +413,19 @@ export function StudentSession() {
           .insert([{
             participant_id: participant.id,
             task_id: taskId,
-            completed: true
+            completed: true,
+            updated_at: new Date().toISOString() // Explicitly set updated_at
           }])
           .select()
           .single()
 
         if (error) throw error
+        
+        // Update local state
         setProgress([...progress, data])
+        
+        // Log the new progress entry
+        console.log('New progress created:', data)
       }
     } catch (error) {
       console.error('Error updating progress:', error)
