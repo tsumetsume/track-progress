@@ -60,6 +60,8 @@ export function InstructorDashboard() {
   const [editTaskTitle, setEditTaskTitle] = useState('')
   const [copiedCode, setCopiedCode] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Timeout in milliseconds to consider a participant inactive (5 minutes)
+  const INACTIVE_TIMEOUT = 5 * 60 * 1000
 
   useEffect(() => {
     loadSessions()
@@ -389,6 +391,19 @@ export function InstructorDashboard() {
     return { completed, total: participants.length }
   }
 
+  const isParticipantActive = (participant: Participant) => {
+    if (!participant.last_seen) return false
+    
+    const lastSeenDate = new Date(participant.last_seen)
+    const now = new Date()
+    const timeDiff = now.getTime() - lastSeenDate.getTime()
+    
+    // Return true if either:
+    // 1. The participant is marked as online AND their last_seen is recent
+    // 2. Their last_seen is very recent (within the last minute) even if is_online is false
+    return (participant.is_online && timeDiff < INACTIVE_TIMEOUT) || timeDiff < 60000
+  }
+
   const deleteParticipant = async (participantId: string) => {
     if (!confirm('この生徒を削除してもよろしいですか？この操作は取り消せません。')) {
       return
@@ -662,7 +677,7 @@ export function InstructorDashboard() {
                 <h3 className="text-xl font-bold text-gray-900">進捗状況</h3>
                 <div className="flex items-center space-x-2 text-green-600">
                   <Users className="w-4 h-4" />
-                  <span className="font-medium">{participants.filter(p => p.is_online).length}人参加中</span>
+                  <span className="font-medium">{participants.filter(p => isParticipantActive(p)).length}人参加中</span>
                 </div>
               </div>
 
@@ -678,7 +693,7 @@ export function InstructorDashboard() {
                       <div key={participant.id} className="border border-gray-200 rounded-lg p-4">
                         <div className="flex items-center justify-between mb-3">
                           <div className="flex items-center space-x-2">
-                            <div className={`w-3 h-3 rounded-full ${participant.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
+                            <div className={`w-3 h-3 rounded-full ${isParticipantActive(participant) ? 'bg-green-500' : 'bg-gray-400'}`} />
                             <span className="font-medium">{participant.name}</span>
                             {participant.viewing_student_screen && (
                               <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">生徒画面閲覧中</span>
