@@ -292,6 +292,15 @@ export function StudentSession() {
       if (error) throw error
       setSession(data)
 
+      // Load initial participant count
+      const { data: participantsData } = await supabase
+        .from('participants')
+        .select('id')
+        .eq('session_id', data.id)
+        .eq('is_online', true)
+      
+      setParticipantCount(participantsData?.length || 0)
+
       // Try to restore participant if stored
       if (sessionCode && studentName && storedParticipantId) {
         await restoreOrCreateParticipant(data.id)
@@ -328,6 +337,15 @@ export function StudentSession() {
 
         if (!updateError) {
           setParticipant(updatedParticipant)
+          
+          // Update participant count after restoring a participant
+          const { data: participantsData } = await supabase
+            .from('participants')
+            .select('id')
+            .eq('session_id', sessionId)
+            .eq('is_online', true)
+          
+          setParticipantCount(participantsData?.length || 0)
           return
         }
       }
@@ -356,6 +374,15 @@ export function StudentSession() {
       if (error) throw error
       setParticipant(data)
       setStoredParticipantId(data.id)
+      
+      // Update participant count after creating a new participant
+      const { data: participantsData } = await supabase
+        .from('participants')
+        .select('id')
+        .eq('session_id', sessionId)
+        .eq('is_online', true)
+      
+      setParticipantCount(participantsData?.length || 0)
     } catch (error) {
       console.error('Error creating participant:', error)
       setError('参加者の登録に失敗しました')
